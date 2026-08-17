@@ -3,6 +3,7 @@ use crate::features::{
     SampleFeature, TextureFeature,
 };
 use goblin::elf::Elf;
+use image::GrayImage;
 use std::{fs, path::PathBuf};
 
 #[derive(Debug)]
@@ -48,6 +49,32 @@ impl Sample {
 
         let img: ImageFeature = ImageFeature::extract(&self.raw_data);
         self.features.texture = TextureFeature::extract(&img);
+
+        Ok(())
+    }
+
+    // Modifica la funzione per accettare 'file_name' come parametro
+    pub fn save_image(
+        &self,
+        output_dir: &str,
+        width: u32,
+        height: u32,
+        file_name: &str,
+    ) -> Result<(), String> {
+        let target_size = (width * height) as usize;
+        let mut image_buffer = vec![0u8; target_size];
+        let bytes_to_copy = std::cmp::min(self.raw_data.len(), target_size);
+
+        image_buffer[..bytes_to_copy].copy_from_slice(&self.raw_data[..bytes_to_copy]);
+
+        let img = GrayImage::from_raw(width, height, image_buffer)
+            .ok_or("Errore critico durante la costruzione del buffer immagine")?;
+
+        // Costruisci il percorso usando il nome file passato come argomento
+        let out_path = PathBuf::from(output_dir).join(file_name);
+
+        img.save(&out_path)
+            .map_err(|e| format!("Errore salvataggio immagine {}: {}", file_name, e))?;
 
         Ok(())
     }

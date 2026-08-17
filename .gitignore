@@ -1,2 +1,4 @@
 /target
-/samples
+/samples*
+*.csv
+/dataset_images*

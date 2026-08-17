@@ -16,7 +16,7 @@ pub struct StructuralFeature {
 
 impl StructuralFeature {
     pub fn extract(raw_data: &[u8], elf: &Elf) -> Result<Self, String> {
-        let mut feature = Self::default();
+        let mut feature: StructuralFeature = Self::default();
 
         feature.segment_count = elf.program_headers.len();
         for ph in &elf.program_headers {
@@ -28,10 +28,10 @@ impl StructuralFeature {
         // 2. Analisi delle Sezioni (Section Headers)
         feature.section_count = elf.section_headers.len();
 
-        let mut total_entropy = 0.0;
-        let mut valid_sections_for_entropy = 0;
-        let mut code_size = 0.0;
-        let mut data_size = 0.0;
+        let mut total_entropy: f64 = 0.0;
+        let mut valid_sections_for_entropy: i32 = 0;
+        let mut code_size: f64 = 0.0;
+        let mut data_size: f64 = 0.0;
 
         for sh in &elf.section_headers {
             let flags = sh.sh_flags;
@@ -57,9 +57,8 @@ impl StructuralFeature {
                 }
             }
 
-            // 3. Estrazione sicura dei byte e calcolo entropia
-            let offset = sh.sh_offset as usize;
-            let size = sh.sh_size as usize;
+            let offset: usize = sh.sh_offset as usize;
+            let size: usize = sh.sh_size as usize;
 
             if offset.saturating_add(size) <= raw_data.len() {
                 let section_data = &raw_data[offset..offset + size];
@@ -74,41 +73,31 @@ impl StructuralFeature {
             }
         }
 
-        // Finalizzazione statistiche
         if valid_sections_for_entropy > 0 {
             feature.avg_section_entropy = total_entropy / (valid_sections_for_entropy as f64);
         }
 
-        // Gestione divisione per zero nel rapporto codice/dati
-        if data_size > 0.0 {
-            feature.code_to_data_ratio = code_size / data_size;
-        } else {
-            // Se non ci sono dati, il rapporto è teoricamente infinito.
-            // Per il machine learning, passiamo un valore proporzionale alla size del codice.
-            feature.code_to_data_ratio = code_size;
-        }
+        feature.code_to_data_ratio = code_size / (data_size + 1.0);
 
         Ok(feature)
     }
 
-    /// Helper privato per calcolare l'entropia di uno slice di byte.
-    /// Riprende la logica super veloce basata su array che abbiamo usato per il ByteLevel.
     fn calculate_shannon_entropy(data: &[u8]) -> f64 {
         if data.is_empty() {
             return 0.0;
         }
 
-        let mut counts = [0usize; 256];
+        let mut counts: [usize; 256] = [0usize; 256];
         for &byte in data {
             counts[byte as usize] += 1;
         }
 
-        let total_bytes = data.len() as f64;
-        let mut entropy = 0.0;
+        let total_bytes: f64 = data.len() as f64;
+        let mut entropy: f64 = 0.0;
 
         for &count in &counts {
             if count > 0 {
-                let p = count as f64 / total_bytes;
+                let p: f64 = count as f64 / total_bytes;
                 entropy -= p * p.log2();
             }
         }
