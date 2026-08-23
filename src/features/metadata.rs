@@ -1,6 +1,8 @@
 // src/features/metadata.rs
 use goblin::elf::{Elf, header::ET_DYN};
 
+use super::architecture::ArchKind;
+
 #[derive(Debug, Default)]
 pub struct MetadataFeature {
     pub file_size: usize,
@@ -9,6 +11,7 @@ pub struct MetadataFeature {
     pub entry_point_offset_ratio: f64,
     pub entry_point_last_section: bool,
     pub is_stripped: bool,
+    pub arch: ArchKind,
 }
 
 impl MetadataFeature {
@@ -20,6 +23,7 @@ impl MetadataFeature {
         feature.is_stripped = elf.syms.is_empty() && elf.dynsyms.is_empty();
         feature.entry_point_offset_ratio = Self::entry_point_offset_ratio(elf);
         feature.entry_point_last_section = Self::check_last_section_entry_point(elf);
+        feature.arch = ArchKind::from_e_machine(elf.header.e_machine);
         feature
     }
 

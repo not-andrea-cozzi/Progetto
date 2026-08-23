@@ -30,8 +30,8 @@ struct Pipeline {
 impl Pipeline {
     async fn run(&self) -> Result<(), String> {
         fs::create_dir_all(&self.directory_images)
-        .await
-        .map_err(|e| e.to_string())?;
+            .await
+            .map_err(|e| e.to_string())?;
 
         let malware = self.process_dir(&self.directory_malware, 1).await?;
         let goodware = self.process_dir(&self.directory_goodware, 0).await?;
@@ -39,7 +39,7 @@ impl Pipeline {
         eprintln!(
             "Estratti {} campioni malware, {} campioni goodware.",
             malware.len(),
-                  goodware.len()
+            goodware.len()
         );
 
         let (train, val, test) = Self::stratified_split(malware, goodware);
@@ -51,17 +51,16 @@ impl Pipeline {
         println!(
             "Split completato -> train: {}, val: {}, test: {}",
             train.len(),
-                 val.len(),
-                 test.len()
+            val.len(),
+            test.len()
         );
         Ok(())
     }
 
-
     async fn process_dir(&self, dir: &str, label: u8) -> Result<Vec<Row>, String> {
         let mut entries = fs::read_dir(dir)
-        .await
-        .map_err(|e| format!("{}: {}", dir, e))?;
+            .await
+            .map_err(|e| format!("{}: {}", dir, e))?;
 
         let mut filenames = Vec::new();
         while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
@@ -180,8 +179,8 @@ impl Pipeline {
 
         let header = format!("filename,image_name,label,{}\n", Self::header());
         out.write_all(header.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+            .await
+            .map_err(|e| e.to_string())?;
 
         for row in rows {
             let line = format!(
@@ -189,15 +188,15 @@ impl Pipeline {
                 row.filename, row.image_name, row.label, row.feature_line
             );
             out.write_all(line.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
         }
 
         out.flush().await.map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    // --- Invariate rispetto all'originale ---
+    // --- Invariate rispetto all'originale, salvo aggiunte in coda ---
 
     fn header() -> String {
         let mut cols = vec!["global_entropy".to_string()];
@@ -242,6 +241,29 @@ impl Pipeline {
             .map(|s| s.to_string()),
         );
         cols.extend((0..256).map(|i| format!("lbp_{}", i)));
+
+        // --- Nuove colonne: packing, relocation, arch one-hot ---
+        cols.extend(
+            [
+                "file_to_section_size_ratio",
+                "section_table_inconsistent",
+                "entry_point_outside_text",
+                "nonstandard_section_name_count",
+                "known_packer_signature_found",
+                "reloc_dyn_count",
+                "reloc_plt_count",
+                "nonstandard_reloc_type_count",
+                "reloc_total_to_filesize_ratio",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+        cols.extend(
+            Progetto::features::ArchKind::CSV_COLS
+                .iter()
+                .map(|s| s.to_string()),
+        );
+
         cols.join(",")
     }
 
@@ -252,41 +274,56 @@ impl Pipeline {
 
         vals.extend([
             (f.metadata.is_64_bit as u8).to_string(),
-                    (f.metadata.is_shared_object as u8).to_string(),
-                    f.metadata.entry_point_offset_ratio.to_string(),
-                    (f.metadata.is_stripped as u8).to_string(),
-                    f.instruction.mov_ops_ratio.to_string(),
-                    f.instruction.arithmetic_ops_ratio.to_string(),
-                    f.instruction.logic_ops_ratio.to_string(),
-                    f.instruction.control_flow_ratio.to_string(),
-                    f.instruction.system_ops_ratio.to_string(),
-                    f.instruction.instruction_density.to_string(),
-                    f.api_imports.dynamic_library_count.to_string(),
-                    f.api_imports.total_import_count.to_string(),
-                    f.api_imports.file_io_api_count.to_string(),
-                    f.api_imports.network_api_count.to_string(),
-                    f.api_imports.process_api_count.to_string(),
-                    f.texture.block_entropy_mean.to_string(),
-                    f.texture.block_entropy_std.to_string(),
-                    f.texture.edge_density.to_string(),
-                    f.texture.glcm_contrast.to_string(),
-                    f.texture.glcm_homogeneity.to_string(),
-                    f.texture.glcm_energy.to_string(),
-                    f.strings.string_count.to_string(),
-                    f.strings.avg_string_length.to_string(),
-                    f.strings.network_indicators_count.to_string(),
-                    f.strings.suspicious_paths_count.to_string(),
-                    f.structural.section_count.to_string(),
-                    f.structural.segment_count.to_string(),
-                    f.structural.rwx_section_count.to_string(),
-                    f.structural.wx_segment_count.to_string(),
-                    f.structural.max_section_entropy.to_string(),
-                    f.structural.avg_section_entropy.to_string(),
-                    f.structural.empty_section_count.to_string(),
-                    f.structural.code_to_data_ratio.to_string(),
+            (f.metadata.is_shared_object as u8).to_string(),
+            f.metadata.entry_point_offset_ratio.to_string(),
+            (f.metadata.is_stripped as u8).to_string(),
+            f.instruction.mov_ops_ratio.to_string(),
+            f.instruction.arithmetic_ops_ratio.to_string(),
+            f.instruction.logic_ops_ratio.to_string(),
+            f.instruction.control_flow_ratio.to_string(),
+            f.instruction.system_ops_ratio.to_string(),
+            f.instruction.instruction_density.to_string(),
+            f.api_imports.dynamic_library_count.to_string(),
+            f.api_imports.total_import_count.to_string(),
+            f.api_imports.file_io_api_count.to_string(),
+            f.api_imports.network_api_count.to_string(),
+            f.api_imports.process_api_count.to_string(),
+            f.texture.block_entropy_mean.to_string(),
+            f.texture.block_entropy_std.to_string(),
+            f.texture.edge_density.to_string(),
+            f.texture.glcm_contrast.to_string(),
+            f.texture.glcm_homogeneity.to_string(),
+            f.texture.glcm_energy.to_string(),
+            f.strings.string_count.to_string(),
+            f.strings.avg_string_length.to_string(),
+            f.strings.network_indicators_count.to_string(),
+            f.strings.suspicious_paths_count.to_string(),
+            f.structural.section_count.to_string(),
+            f.structural.segment_count.to_string(),
+            f.structural.rwx_section_count.to_string(),
+            f.structural.wx_segment_count.to_string(),
+            f.structural.max_section_entropy.to_string(),
+            f.structural.avg_section_entropy.to_string(),
+            f.structural.empty_section_count.to_string(),
+            f.structural.code_to_data_ratio.to_string(),
         ]);
 
         vals.extend(f.texture.lbp_histogram.iter().map(|v| v.to_string()));
+
+        // --- Nuovi valori: packing, relocation, arch one-hot ---
+        vals.extend([
+            f.packing.file_to_section_size_ratio.to_string(),
+            (f.packing.section_table_inconsistent as u8).to_string(),
+            (f.packing.entry_point_outside_text as u8).to_string(),
+            f.packing.nonstandard_section_name_count.to_string(),
+            (f.packing.known_packer_signature_found as u8).to_string(),
+            f.relocation.reloc_dyn_count.to_string(),
+            f.relocation.reloc_plt_count.to_string(),
+            f.relocation.nonstandard_reloc_type_count.to_string(),
+            f.relocation.reloc_total_to_filesize_ratio.to_string(),
+        ]);
+        vals.extend(f.metadata.arch.one_hot().iter().map(|v| v.to_string()));
+
         vals.join(",")
     }
 }

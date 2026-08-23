@@ -1,6 +1,8 @@
 use capstone::prelude::*;
 use goblin::elf::Elf;
-use goblin::elf::header::{EM_386, EM_AARCH64, EM_ARM, EM_X86_64};
+
+use super::architecture::ArchKind;
+use super::extraction_warnings::WarningLog;
 
 #[derive(Debug, Default)]
 pub struct InstructionFeature {
@@ -22,17 +24,26 @@ enum Category {
 }
 
 impl InstructionFeature {
-    pub fn extract(elf: &Elf, raw_data: &[u8]) -> Result<Self, String> {
-        let cs = Self::build_capstone(elf.header.e_machine)?;
+    /// Non ritorna mai Err: arch non supportata da capstone o disasm fallito
+    /// su una sezione producono feature azzerate con un warning, mai
+    /// l'abort dell'intero sample.
+    pub fn extract(elf: &Elf, raw_data: &[u8], arch: ArchKind, log: &mut WarningLog) -> Self {
+        let mut f = Self::default();
 
-        let (
-            mut mov_count,
-            mut arith_count,
-            mut logic_count,
-            mut control_count,
-            mut system_count,
-            mut total,
-        ) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        let cs = match Self::build_capstone(arch) {
+            Some(cs) => cs,
+            None => {
+                log.push(
+                    "instruction",
+                    format!("nessun supporto capstone per {:?}, feature azzerate", arch),
+                );
+                return f;
+            }
+        };
+
+        let (mut mov_c, mut arith_c, mut logic_c, mut ctrl_c, mut sys_c, mut total) =
+            (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut sections_failed = 0usize;
 
         for section in &elf.section_headers {
             if section.sh_flags & 0x4 == 0 || section.sh_size == 0 {
@@ -45,65 +56,119 @@ impl InstructionFeature {
             if start >= end {
                 continue;
             }
-            let code = &raw_data[start..end];
-            let Ok(instructions) = cs.disasm_all(code, section.sh_addr) else {
-                continue;
-            };
 
-            for insn in instructions.iter() {
-                total += 1;
-                let mnemonic = insn.mnemonic().unwrap_or("").to_lowercase();
-                match Self::categorize(&mnemonic) {
-                    Category::Mov => mov_count += 1,
-                    Category::Arithmetic => arith_count += 1,
-                    Category::Logic => logic_count += 1,
-                    Category::ControlFlow => control_count += 1,
-                    Category::System => system_count += 1,
-                    Category::Other => {}
+            match cs.disasm_all(&raw_data[start..end], section.sh_addr) {
+                Ok(instructions) => {
+                    for insn in instructions.iter() {
+                        total += 1;
+                        let mnemonic = insn.mnemonic().unwrap_or("").to_lowercase();
+                        match Self::categorize(&mnemonic, arch) {
+                            Category::Mov => mov_c += 1,
+                            Category::Arithmetic => arith_c += 1,
+                            Category::Logic => logic_c += 1,
+                            Category::ControlFlow => ctrl_c += 1,
+                            Category::System => sys_c += 1,
+                            Category::Other => {}
+                        }
+                    }
                 }
+                Err(_) => sections_failed += 1,
             }
         }
 
-        let mut f = Self::default();
+        if sections_failed > 0 {
+            log.push(
+                "instruction",
+                format!(
+                    "{} sezioni eseguibili non disassemblabili, saltate",
+                    sections_failed
+                ),
+            );
+        }
+
         if total > 0 {
-            f.mov_ops_ratio = mov_count as f64 / total as f64;
-            f.arithmetic_ops_ratio = arith_count as f64 / total as f64;
-            f.logic_ops_ratio = logic_count as f64 / total as f64;
-            f.control_flow_ratio = control_count as f64 / total as f64;
-            f.system_ops_ratio = system_count as f64 / total as f64;
+            f.mov_ops_ratio = mov_c as f64 / total as f64;
+            f.arithmetic_ops_ratio = arith_c as f64 / total as f64;
+            f.logic_ops_ratio = logic_c as f64 / total as f64;
+            f.control_flow_ratio = ctrl_c as f64 / total as f64;
+            f.system_ops_ratio = sys_c as f64 / total as f64;
         }
         f.instruction_density = total as f64 / raw_data.len().max(1) as f64;
-        Ok(f)
+        f
     }
 
-    fn build_capstone(e_machine: u16) -> Result<Capstone, String> {
-        let cs = match e_machine {
-            EM_X86_64 => Capstone::new()
+    fn build_capstone(arch: ArchKind) -> Option<Capstone> {
+        let cs = match arch {
+            ArchKind::X86_64 => Capstone::new()
                 .x86()
                 .mode(arch::x86::ArchMode::Mode64)
                 .build(),
-            EM_386 => Capstone::new()
+            ArchKind::X86 => Capstone::new()
                 .x86()
                 .mode(arch::x86::ArchMode::Mode32)
                 .build(),
-            EM_AARCH64 => Capstone::new()
+            ArchKind::Arm64 => Capstone::new()
                 .arm64()
                 .mode(arch::arm64::ArchMode::Arm)
                 .build(),
-            EM_ARM => Capstone::new().arm().mode(arch::arm::ArchMode::Arm).build(),
-            other => return Err(format!("Architettura non supportata: e_machine={}", other)),
+            ArchKind::Arm => Capstone::new().arm().mode(arch::arm::ArchMode::Arm).build(),
+            ArchKind::Unsupported => return None,
         };
-        cs.map_err(|e| e.to_string())
+        cs.ok()
     }
 
-    fn categorize(mnemonic: &str) -> Category {
-        match mnemonic {
+    fn categorize(mnemonic: &str, arch: ArchKind) -> Category {
+        match arch {
+            ArchKind::X86 | ArchKind::X86_64 => Self::categorize_x86(mnemonic),
+            ArchKind::Arm => Self::categorize_arm(mnemonic),
+            ArchKind::Arm64 => Self::categorize_arm64(mnemonic),
+            ArchKind::Unsupported => Category::Other,
+        }
+    }
+
+    fn categorize_x86(m: &str) -> Category {
+        match m {
             "mov" | "movzx" | "movsx" | "lea" | "push" | "pop" => Category::Mov,
             "add" | "sub" | "mul" | "imul" | "div" | "idiv" | "inc" | "dec" => Category::Arithmetic,
             "and" | "or" | "xor" | "not" | "shl" | "shr" | "sar" | "rol" | "ror" => Category::Logic,
             "jmp" | "je" | "jne" | "jz" | "jnz" | "jg" | "jl" | "jge" | "jle" | "call" | "ret"
             | "loop" => Category::ControlFlow,
             "syscall" | "sysenter" | "int" | "in" | "out" => Category::System,
+            _ => Category::Other,
+        }
+    }
+
+    fn categorize_arm(m: &str) -> Category {
+        match m {
+            "mov" | "movw" | "movt" | "mvn" | "ldr" | "str" | "ldm" | "stm" | "push" | "pop"
+            | "ldrb" | "strb" | "ldrh" | "strh" => Category::Mov,
+            "add" | "sub" | "mul" | "mla" | "sdiv" | "udiv" | "adc" | "sbc" | "rsb" => {
+                Category::Arithmetic
+            }
+            "and" | "orr" | "eor" | "bic" | "lsl" | "lsr" | "asr" | "ror" => Category::Logic,
+            "b" | "bl" | "bx" | "blx" | "cbz" | "cbnz" => Category::ControlFlow,
+            "svc" | "swi" | "mrc" | "mcr" => Category::System,
+            _ => Category::Other,
+        }
+    }
+
+    fn categorize_arm64(m: &str) -> Category {
+        if m.starts_with("b.") {
+            return Category::ControlFlow;
+        }
+        match m {
+            "mov" | "movz" | "movn" | "movk" | "ldr" | "str" | "ldp" | "stp" | "ldur" | "stur"
+            | "adr" | "adrp" | "ldrb" | "strb" | "ldrh" | "strh" => Category::Mov,
+            "add" | "sub" | "mul" | "madd" | "msub" | "sdiv" | "udiv" | "adc" | "sbc" => {
+                Category::Arithmetic
+            }
+            "and" | "orr" | "eor" | "mvn" | "bic" | "lsl" | "lsr" | "asr" | "ror" => {
+                Category::Logic
+            }
+            "b" | "bl" | "br" | "blr" | "ret" | "cbz" | "cbnz" | "tbz" | "tbnz" => {
+                Category::ControlFlow
+            }
+            "svc" | "hvc" | "smc" | "brk" => Category::System,
             _ => Category::Other,
         }
     }

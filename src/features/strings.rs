@@ -2,6 +2,8 @@ use goblin::elf::Elf;
 use regex::Regex;
 use std::sync::OnceLock;
 
+use super::extraction_warnings::WarningLog;
+
 #[derive(Debug, Default)]
 pub struct StringFeature {
     pub string_count: usize,
@@ -21,19 +23,21 @@ fn url_regex() -> &'static Regex {
 }
 
 impl StringFeature {
-    pub fn extract(elf: &Elf, raw_data: &[u8]) -> Result<Self, String> {
+    /// Non ritorna mai Err: string table corrotta o assente produce feature
+    /// default con un warning registrato in `log`, non abortisce il sample.
+    /// strtab/dynstrtab sono trattate come fonti indipendenti: se una fallisce
+    /// si continua con l'altra invece di perdere entrambe.
+    pub fn extract(elf: &Elf, raw_data: &[u8], log: &mut WarningLog) -> Self {
         let mut strings: Vec<String> = Vec::new();
 
-        for s in elf.strtab.to_vec().map_err(|e| e.to_string())? {
-            if !s.is_empty() {
-                strings.push(s.to_string());
-            }
+        match elf.strtab.to_vec() {
+            Ok(v) => strings.extend(v.into_iter().filter(|s| !s.is_empty()).map(String::from)),
+            Err(e) => log.push("strings", format!("strtab illeggibile, saltata: {}", e)),
         }
 
-        for s in elf.dynstrtab.to_vec().map_err(|e| e.to_string())? {
-            if !s.is_empty() {
-                strings.push(s.to_string());
-            }
+        match elf.dynstrtab.to_vec() {
+            Ok(v) => strings.extend(v.into_iter().filter(|s| !s.is_empty()).map(String::from)),
+            Err(e) => log.push("strings", format!("dynstrtab illeggibile, saltata: {}", e)),
         }
 
         if let Some(sh) = elf
@@ -59,14 +63,27 @@ impl StringFeature {
                 if current.len() > 3 {
                     strings.push(current);
                 }
+            } else {
+                log.push(
+                    "strings",
+                    format!(".rodata offset/size fuori dai limiti del file (offset={}, size={}, filelen={})",
+                        offset, size, raw_data.len()),
+                );
             }
+        }
+
+        if strings.is_empty() {
+            log.push(
+                "strings",
+                "nessuna stringa estratta da strtab/dynstrtab/.rodata",
+            );
         }
 
         // cap a 2000, stesso limite del Python, per evitare costo quadratico
         // su regex applicate a corpus enormi
         let capped: Vec<&String> = strings.iter().take(2000).collect();
 
-        Ok(Self::classify(&capped, strings.len()))
+        Self::classify(&capped, strings.len())
     }
 
     fn classify(strings: &[&String], total_count: usize) -> Self {
