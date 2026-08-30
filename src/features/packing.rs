@@ -8,10 +8,6 @@ pub struct PackingFeature {
     /// il payload in una sezione unica: rapporto file/sezioni-dichiarate anomalo
     /// rispetto a binari compilati normalmente.
     pub file_to_section_size_ratio: f64,
-    /// true se e_shoff (offset section header table) e' oltre la fine del file,
-    /// o se il numero di sezioni dichiarato non e' consistente con la dimensione
-    /// file: molti packer troncano/corrompono la section table dopo il packing
-    /// pur lasciando validi i program header (necessari al loader).
     pub section_table_inconsistent: bool,
     /// entry point in una sezione diversa dall'ultima per indirizzo E diversa
     /// da .text: pattern tipico di stub di unpacking iniettato.
@@ -111,17 +107,17 @@ impl PackingFeature {
     /// la fine del file e' il pattern classico di section table azzerata/rimossa
     /// da un packer (il loader OS ignora le section header, solo i program
     /// header contano a runtime, quindi il binario resta eseguibile).
+    ///
+    /// shnum==0 e' escluso da questo controllo: e' il caso legittimo di un
+    /// binario stripped (nessuna section table, solo program header), non un
+    /// segnale di packing di per se'.
     fn check_section_table_consistency(raw_data: &[u8], elf: &Elf) -> bool {
         let shoff = elf.header.e_shoff;
         let shnum = elf.header.e_shnum as u64;
         let shentsize = elf.header.e_shentsize as u64;
 
         if shnum == 0 {
-            // nessuna sezione dichiarata: legittimo solo se anche program
-            // header sono coerenti, ma qui segnaliamo comunque come
-            // inconsistente perche' un binario compilato normalmente ha
-            // sempre sezioni.
-            return true;
+            return false;
         }
 
         let table_end = shoff.saturating_add(shnum.saturating_mul(shentsize));

@@ -1,5 +1,6 @@
 use Progetto::sample::Sample;
 use rand::seq::SliceRandom;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -11,11 +12,14 @@ const TRAIN_FRAC: f64 = 0.70;
 const VAL_FRAC: f64 = 0.15;
 // TEST_FRAC = resto (0.15)
 
+const IMAGE_SIZE: u32 = 200;
+
 struct Row {
     filename: String,
     image_name: String,
     label: u8,
     feature_line: String,
+    content_hash: String,
 }
 
 struct Pipeline {
@@ -42,6 +46,8 @@ impl Pipeline {
             goodware.len()
         );
 
+        let (malware, goodware) = Self::dedup_by_hash(malware, goodware);
+
         let (train, val, test) = Self::stratified_split(malware, goodware);
 
         self.write_csv(&self.file_train, &train).await?;
@@ -55,6 +61,41 @@ impl Pipeline {
             test.len()
         );
         Ok(())
+    }
+
+    /// Rimuove campioni con contenuto identico (stesso SHA-256), sia
+    /// all'interno della stessa classe sia tra classi. Necessario perche'
+    /// varianti duplicate/packate dello stesso file possono altrimenti
+    /// finire sia in train sia in test dopo lo split, gonfiando le metriche
+    /// (data leakage) senza che il modello stia davvero generalizzando.
+    /// A parita' di hash si tiene solo la prima occorrenza incontrata.
+    fn dedup_by_hash(malware: Vec<Row>, goodware: Vec<Row>) -> (Vec<Row>, Vec<Row>) {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut dedup_count = 0usize;
+
+        let filter = |rows: Vec<Row>, seen: &mut HashSet<String>, dedup_count: &mut usize| {
+            rows.into_iter()
+                .filter(|r| {
+                    let is_new = seen.insert(r.content_hash.clone());
+                    if !is_new {
+                        *dedup_count += 1;
+                    }
+                    is_new
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let malware = filter(malware, &mut seen, &mut dedup_count);
+        let goodware = filter(goodware, &mut seen, &mut dedup_count);
+
+        if dedup_count > 0 {
+            eprintln!(
+                "Rimossi {} campioni duplicati (stesso SHA-256) prima dello split.",
+                dedup_count
+            );
+        }
+
+        (malware, goodware)
     }
 
     async fn process_dir(&self, dir: &str, label: u8) -> Result<Vec<Row>, String> {
@@ -122,17 +163,19 @@ impl Pipeline {
         let sample_tag = if label == 1 { "malware" } else { "goodware" };
         let image_name = format!("{}_{}.png", filename, sample_tag);
 
-        if let Err(e) = sample.save_image(&images_dir, 224, 224, &image_name) {
+        if let Err(e) = sample.save_image(&images_dir, IMAGE_SIZE, IMAGE_SIZE, &image_name) {
             eprintln!("Errore creazione immagine per {}: {}", image_name, e);
         }
 
         let feature_line = Self::feature_row(&sample);
+        let content_hash = sample.features.byte_level.sha256.clone();
 
         Some(Row {
             filename,
             image_name,
             label,
             feature_line,
+            content_hash,
         })
     }
 
@@ -140,6 +183,8 @@ impl Pipeline {
     /// (split stratificato: mantiene il rapporto malware/goodware in ogni set).
     /// Il resto dell'arrotondamento finisce sempre nel test set, quindi la
     /// somma dei tre set combacia esattamente con il totale per classe.
+    /// Va eseguito DOPO dedup_by_hash: deduplicare dopo lo split
+    /// non impedirebbe la fuga di duplicati tra split diversi.
     fn stratified_split(malware: Vec<Row>, goodware: Vec<Row>) -> (Vec<Row>, Vec<Row>, Vec<Row>) {
         let mut rng = rand::rng();
 

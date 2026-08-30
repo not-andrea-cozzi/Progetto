@@ -2,3 +2,5 @@
 /samples*
 *.csv
 /dataset_images*
+/venv
+*.py

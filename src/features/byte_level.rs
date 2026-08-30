@@ -1,8 +1,11 @@
 // src/features/byte_level.rs
+use sha2::{Digest, Sha256};
+
 #[derive(Debug)]
 pub struct ByteLevelFeature {
     pub global_entropy: f64,
     pub bytes: [f64; 256],
+    pub sha256: String,
 }
 
 impl Default for ByteLevelFeature {
@@ -10,6 +13,7 @@ impl Default for ByteLevelFeature {
         Self {
             global_entropy: 0.0,
             bytes: [0.0; 256],
+            sha256: String::new(),
         }
     }
 }
@@ -34,6 +38,7 @@ impl ByteLevelFeature {
             }
         }
         feature.global_entropy = entropy;
+        feature.sha256 = format!("{:x}", Sha256::digest(raw_data));
         Ok(feature)
     }
 }
